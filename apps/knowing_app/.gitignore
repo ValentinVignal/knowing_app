@@ -43,3 +43,7 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+/assets/sample_data.csv
+/assets/sample_data.json
+/assets/recommendations.csv
+lib/services/api_keys.dart

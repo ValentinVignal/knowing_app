@@ -1,5 +1,0 @@
-name: knowing_app
-
-packages:
-  - apps/**
-  - packages/**
