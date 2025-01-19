@@ -39,6 +39,8 @@ dependencies:
   http: ^1.2.2
   csv: ^6.0.0
   collection: ^1.19.0
+  freezed_annotation: ^2.4.4
+  json_annotation: ^4.9.0
 
 dev_dependencies:
   flutter_test:
@@ -52,6 +54,8 @@ dev_dependencies:
   flutter_lints: ^5.0.0
   go_router_builder: ^2.7.3
   build_runner: ^2.4.14
+  freezed: ^2.5.8
+  json_serializable: ^6.9.3
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec
