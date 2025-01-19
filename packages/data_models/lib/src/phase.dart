@@ -22,4 +22,6 @@ enum Phase {
   static Phase? fromStringOrNull(String json) => _$PhaseEnumMap.entries
       .firstWhereOrNull((entry) => entry.value == json)
       ?.key;
+
+  String asString() => _$PhaseEnumMap[this]!;
 }

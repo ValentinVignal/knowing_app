@@ -1,30 +1,60 @@
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:collection/collection.dart';
-import 'package:csv/csv.dart';
+import 'package:data_models/data_models.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http/http.dart' as http;
+import 'package:knowing_app/router/routes.dart';
 import 'package:knowing_app/services/api_keys.dart';
 
-const _samplePhaseToRecommendationPhase = {
-  'Menstrual': 'Menstrual (Day 1–5)',
-  'Follicular': 'Follicular (Day 6–13)',
-  'Ovulation': 'Ovulatory (Day 14±2)',
-  'Luteal 1': 'Luteal phase 1',
-  'Luteal 2': 'Luteal phase 2',
-};
-
-class AnalyzeScreen extends StatefulWidget {
-  const AnalyzeScreen({super.key});
-
-  @override
-  State<AnalyzeScreen> createState() => _AnalyzeScreenState();
+extension on DateTime {
+  String get yyyyMMdd =>
+      '$year-${month.toString().padLeft(2, '0')}-${day.toString().padLeft(2, '0')}';
 }
 
-class _AnalyzeScreenState extends State<AnalyzeScreen> {
-  var _content = <({String title, String content})>[];
+final dateOverrideProvider = Provider<String?>((ref) {
+  return null;
+});
+
+final dateProvider = Provider<String>((ref) {
+  final override = ref.watch(dateOverrideProvider);
+  if (override != null) {
+    return override;
+  }
+
+  final now = DateTime.now();
+  return now.yyyyMMdd;
+}, dependencies: [dateOverrideProvider]);
+
+final sampleDataProvider =
+    FutureProvider<Map<String, DailyRecord>>((ref) async {
+  final file = await rootBundle.loadString('assets/sample_data.json');
+  final json = jsonDecode(file) as Map<String, dynamic>;
+  return json.map((key, value) => MapEntry(key, DailyRecord.fromJson(value)));
+});
+
+final dailyRecordProvider = Provider<AsyncValue<DailyRecord?>>((ref) {
+  final date = ref.watch(dateProvider);
+  return ref.watch(sampleDataProvider).whenData(
+        (data) => data[date],
+      );
+}, dependencies: [dateProvider, sampleDataProvider]);
+
+const daysInFuture = 3;
+
+class AnalyzeScreen extends ConsumerStatefulWidget {
+  const AnalyzeScreen({
+    super.key,
+  });
+
+  @override
+  ConsumerState<AnalyzeScreen> createState() => _AnalyzeScreenState();
+}
+
+class _AnalyzeScreenState extends ConsumerState<AnalyzeScreen> {
+  final _content = <({String title, String content})>[];
 
   void _onChatGPTPressed() async {
     final csv = await rootBundle.loadString('assets/sample_data.csv');
@@ -56,37 +86,20 @@ class _AnalyzeScreenState extends State<AnalyzeScreen> {
     print(body);
   }
 
-  void _onPressAnalyze() async {
-    final sampleString = await rootBundle.loadString('assets/sample_data.csv');
-    final recommendationsString =
-        await rootBundle.loadString('assets/recommendations.csv');
-
-    final sample = const CsvToListConverter().convert(sampleString);
-    final current = sample[1]; // 0 is for the headers.
-    final sampleCycle = (current[4] as String);
-    final recommendations =
-        const CsvToListConverter().convert(recommendationsString);
-    final headers = recommendations.first;
-
-    final recommendationCycle = _samplePhaseToRecommendationPhase[sampleCycle];
-
-    final recommendation = recommendations.firstWhereOrNull(
-      (element) => element.first == recommendationCycle,
-    );
-    if (recommendation == null) {
-      return;
-    }
-
-    setState(() {
-      _content = [
-        for (final (index, header) in headers.indexed)
-          (title: header, content: recommendation[index]),
-      ];
-    });
-  }
-
   @override
   Widget build(BuildContext context) {
+    final selectedDate = ref.watch(dateProvider);
+    final record = ref.watch(dailyRecordProvider).valueOrNull;
+    final List<({String title, String content})> content;
+    if (record != null) {
+      content = [
+        (title: 'Date', content: record.date),
+        (title: 'Phase', content: record.phase.asString()),
+      ];
+    } else {
+      content = const [];
+    }
+
     return Scaffold(
       body: Column(
         children: [
@@ -96,17 +109,73 @@ class _AnalyzeScreenState extends State<AnalyzeScreen> {
               child: Text('Chat GPT'),
             ),
           ),
-          Center(
-            child: ElevatedButton(
-              onPressed: _onPressAnalyze,
-              child: Text('Analyze'),
+          SizedBox(
+            height: 100,
+            child: ListView.builder(
+              scrollDirection: Axis.horizontal,
+              reverse: true,
+              itemBuilder: (context, index) {
+                final date = DateTime.now()
+                    .subtract(Duration(days: index - daysInFuture));
+
+                final theme = Theme.of(context);
+
+                final color = switch (index) {
+                  < daysInFuture => theme.colorScheme.secondaryContainer,
+                  daysInFuture => theme.colorScheme.primaryContainer,
+                  _ => theme.colorScheme.tertiaryContainer,
+                };
+                final textColor = switch (index) {
+                  < daysInFuture => theme.colorScheme.onSecondaryContainer,
+                  daysInFuture => theme.colorScheme.onPrimaryContainer,
+                  _ => theme.colorScheme.onTertiaryContainer,
+                };
+
+                final dateString = date.yyyyMMdd;
+                return Padding(
+                  padding: const EdgeInsets.all(4.0),
+                  child: DecoratedBox(
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(
+                        width: 2,
+                        color: dateString == selectedDate
+                            ? theme.colorScheme.primary
+                            : Colors.transparent,
+                      ),
+                    ),
+                    child: Padding(
+                      padding: const EdgeInsets.all(4.0),
+                      child: Material(
+                        color: color,
+                        borderRadius: BorderRadius.circular(16),
+                        child: InkWell(
+                          borderRadius: BorderRadius.circular(16),
+                          onTap: () {
+                            AnalyzeRoute(date: dateString).replace(context);
+                          },
+                          child: Center(
+                            child: Padding(
+                              padding: const EdgeInsets.all(8.0),
+                              child: Text(
+                                date.yyyyMMdd,
+                                style: TextStyle(color: textColor),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                );
+              },
             ),
           ),
           Expanded(
             child: ListView.builder(
-              itemCount: _content.length,
+              itemCount: content.length,
               itemBuilder: (context, index) {
-                final item = _content[index];
+                final item = content[index];
                 return Padding(
                   padding: const EdgeInsets.all(8.0),
                   child: Card(

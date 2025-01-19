@@ -17,10 +17,15 @@ RouteBase get $analyzeRoute => GoRouteData.$route(
     );
 
 extension $AnalyzeRouteExtension on AnalyzeRoute {
-  static AnalyzeRoute _fromState(GoRouterState state) => const AnalyzeRoute();
+  static AnalyzeRoute _fromState(GoRouterState state) => AnalyzeRoute(
+        date: state.uri.queryParameters['date'],
+      );
 
   String get location => GoRouteData.$location(
         '/analyze',
+        queryParams: {
+          if (date != null) 'date': date,
+        },
       );
 
   void go(BuildContext context) => context.go(location);
