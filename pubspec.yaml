@@ -15,3 +15,5 @@ melos:
     run: flutter test
     requires:
       flutter: true
+dependencies:
+  universal_io: ^2.2.2
