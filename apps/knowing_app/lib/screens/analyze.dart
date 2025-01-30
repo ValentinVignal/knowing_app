@@ -1,6 +1,8 @@
 import 'dart:convert';
-import 'dart:io';
+import 'dart:math';
 
+import 'package:collection/collection.dart';
+import 'package:csv/csv.dart';
 import 'package:data_models/data_models.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -9,9 +11,26 @@ import 'package:http/http.dart' as http;
 import 'package:knowing_app/router/routes.dart';
 import 'package:knowing_app/services/api_keys.dart';
 
+const _phaseLength = {
+  Phase.menstrual: 7,
+  Phase.follicular: 7,
+  Phase.ovulation: 2,
+  Phase.luteal1: 7,
+  Phase.luteal2: 7,
+};
+
 extension on DateTime {
   String get yyyyMMdd =>
       '$year-${month.toString().padLeft(2, '0')}-${day.toString().padLeft(2, '0')}';
+}
+
+class _TitleAndContent {
+  const _TitleAndContent({
+    required this.title,
+    required this.content,
+  });
+  final String title;
+  final String content;
 }
 
 final dateOverrideProvider = Provider<String?>((ref) {
@@ -42,6 +61,70 @@ final dailyRecordProvider = Provider<AsyncValue<DailyRecord?>>((ref) {
       );
 }, dependencies: [dateProvider, sampleDataProvider]);
 
+final recommendationsProvider =
+    FutureProvider<Map<Phase, List<_TitleAndContent>>>((ref) async {
+  final file = await rootBundle.loadString('assets/recommendations.csv');
+  final json = const CsvToListConverter().convert(file);
+  final map = <Phase, List<_TitleAndContent>>{};
+  final headers = (json.first).cast<String>();
+  for (final (index, row) in json.skip(1).indexed) {
+    final phase = Phase.values[index];
+    map[phase] = row
+        .mapIndexed((index, text) => _TitleAndContent(
+              title: headers[index],
+              content: text as String,
+            ))
+        .toList();
+  }
+  return map;
+});
+
+final expectedPhaseProvider = FutureProvider<Phase?>((ref) async {
+  final sampleData = (await ref.watch(sampleDataProvider.future));
+  if (sampleData.isEmpty) {
+    return null;
+  }
+  final dates = sampleData.keys.sorted((a, b) => b.compareTo(a));
+  final latestDateString = dates.first;
+  var firstDateOfPhaseString = latestDateString;
+  final phase = sampleData[firstDateOfPhaseString]!.phase;
+
+  for (var i = 1; i < min(_phaseLength[phase]! + 1, sampleData.length); i++) {
+    if (sampleData[dates[i]]!.phase != phase ||
+        DateTime.parse(latestDateString)
+                .difference(DateTime.parse(dates[i]))
+                .inDays >
+            _phaseLength[phase]!) {
+      break;
+    }
+    firstDateOfPhaseString = dates[i];
+  }
+
+  final firstDateOfPhase = DateTime.parse(firstDateOfPhaseString);
+  final date = DateTime.parse(ref.watch(dateProvider));
+  var currentDate = firstDateOfPhase;
+  var currentPhase = phase;
+  while (date.difference(currentDate).inDays > 1) {
+    currentDate = currentDate.add(Duration(
+        days: min(
+            _phaseLength[currentPhase]!, date.difference(currentDate).inDays)));
+    currentPhase = Phase.values[(currentPhase.index + 1) % Phase.values.length];
+  }
+
+  return phase;
+}, dependencies: [dateProvider, sampleDataProvider]);
+
+final recommendationsForPhaseProvider =
+    Provider<List<_TitleAndContent>?>((ref) {
+  final phase = ref.watch(expectedPhaseProvider).valueOrNull;
+  final recommendations =
+      ref.watch(recommendationsProvider).valueOrNull ?? const {};
+  if (phase == null || recommendations.isEmpty) {
+    return const [];
+  }
+  return recommendations[phase] ?? const [];
+}, dependencies: [expectedPhaseProvider, recommendationsProvider]);
+
 const daysInFuture = 3;
 
 class AnalyzeScreen extends ConsumerStatefulWidget {
@@ -54,8 +137,6 @@ class AnalyzeScreen extends ConsumerStatefulWidget {
 }
 
 class _AnalyzeScreenState extends ConsumerState<AnalyzeScreen> {
-  final _content = <({String title, String content})>[];
-
   void _onChatGPTPressed() async {
     final csv = await rootBundle.loadString('assets/sample_data.csv');
     const parameter1 = 2;
@@ -89,15 +170,28 @@ class _AnalyzeScreenState extends ConsumerState<AnalyzeScreen> {
   @override
   Widget build(BuildContext context) {
     final selectedDate = ref.watch(dateProvider);
-    final record = ref.watch(dailyRecordProvider).valueOrNull;
-    final List<({String title, String content})> content;
-    if (record != null) {
-      content = [
-        (title: 'Date', content: record.date),
-        (title: 'Phase', content: record.phase.asString()),
-      ];
+    final selectedDateTime = DateTime.parse(selectedDate);
+    final now = DateTime.now();
+    final List<_TitleAndContent> logged;
+    if (selectedDateTime.isAfter(now)) {
+      logged = const [];
     } else {
-      content = const [];
+      final record = ref.watch(dailyRecordProvider).valueOrNull;
+      if (record == null) {
+        logged = const [];
+      } else {
+        logged = [
+          _TitleAndContent(title: 'Date', content: record.date),
+          _TitleAndContent(title: 'Phase', content: record.phase.asString()),
+        ];
+      }
+    }
+
+    final List<_TitleAndContent> recommendations;
+    if (selectedDateTime.add(Duration(days: 1)).isBefore(now)) {
+      recommendations = const [];
+    } else {
+      recommendations = ref.watch(recommendationsForPhaseProvider) ?? const [];
     }
 
     return Scaffold(
@@ -172,33 +266,68 @@ class _AnalyzeScreenState extends ConsumerState<AnalyzeScreen> {
             ),
           ),
           Expanded(
-            child: ListView.builder(
-              itemCount: content.length,
-              itemBuilder: (context, index) {
-                final item = content[index];
-                return Padding(
-                  padding: const EdgeInsets.all(8.0),
-                  child: Card(
-                      child: Padding(
+            child: ListView(
+              children: [
+                if (recommendations.isNotEmpty) ...[
+                  Padding(
                     padding: const EdgeInsets.all(8.0),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          item.title,
-                          style: Theme.of(context).textTheme.headlineSmall,
-                        ),
-                        const SizedBox(height: 8),
-                        Text(item.content),
-                      ],
+                    child: Text(
+                      'Recommendations',
+                      style: Theme.of(context).textTheme.headlineMedium,
                     ),
-                  )),
-                );
-              },
+                  ),
+                  ...recommendations.map((item) {
+                    return _TitleContentWidget(item: item);
+                  })
+                ],
+                if (logged.isNotEmpty) ...[
+                  Padding(
+                    padding: const EdgeInsets.all(8.0),
+                    child: Text(
+                      'Logged',
+                      style: Theme.of(context).textTheme.headlineMedium,
+                    ),
+                  ),
+                  ...logged.map((item) {
+                    return _TitleContentWidget(item: item);
+                  })
+                ],
+              ],
             ),
           ),
         ],
       ),
+    );
+  }
+}
+
+class _TitleContentWidget extends StatelessWidget {
+  const _TitleContentWidget({
+    required this.item,
+    super.key,
+  });
+
+  final _TitleAndContent item;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.all(8.0),
+      child: Card(
+          child: Padding(
+        padding: const EdgeInsets.all(8.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              item.title,
+              style: Theme.of(context).textTheme.headlineSmall,
+            ),
+            const SizedBox(height: 8),
+            Text(item.content),
+          ],
+        ),
+      )),
     );
   }
 }
